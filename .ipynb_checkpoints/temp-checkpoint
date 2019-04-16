@@ -1,0 +1,127 @@
+def merge_duplicates(_devmodel, target, keep_descriptors=False):
+    """
+    Identifies repeated experimental values and returns mean values for those
+    data along with their standard deviation. Only aggregates experimental
+    values that have been acquired at the same temperature and pressure.
+
+    Parameters
+    ----------
+    model_name: dev_model
+        the dev_model object to be interrogated
+    target: list of str
+        target property containedi in the data
+    keep_descriptors: boolean, default False
+        if True descriptors will be included in the output DataFrame
+
+    Returns
+    -----------
+    out: dataframe
+        pandas DataFrame of the original data where repeated measurements
+        have been averaged and their variance stored in a separate column
+    """
+    
+    data = target
+    data_and_state = data + ['Temperature, K', 'Pressure, kPa']
+    model_outputs = -7 + _devmodel.summary.shape[0]
+    # _devmodel = dev_model
+    cols = _devmodel.data.columns
+
+    for index, item in enumerate(target):
+        _devmodel.data.loc[:,item] = _devmodel.data.loc[:,item].apply(lambda x: exp(float(x)))
+            
+    output_val = pd.DataFrame()
+    output_xtd = pd.DataFrame()
+    for index, item in enumerate(target):
+        val = _devmodel.data.groupby(['smiles-cation', 'smiles-anion', 'smiles-solvent', 'mol fraction salt'] 
+                                    )[item].mean().\
+            reset_index()
+        xtd = _devmodel.data.groupby(['smiles-cation', 'smiles-anion', 'smiles-solvent', 'mol fraction salt']
+                                    )[item].std().\
+            reset_index()
+        if index == 0:
+            output_val = val
+            output_xtd = xtd
+        else:
+            output_val = pd.merge(output_val, val)
+            output_xtd = pd.merge(output_xtd, xtd)
+        size = _devmodel.data.groupby(['smiles-cation', 'smiles-anion', 'smiles-solvent', 'mol fraction salt']
+                                     )[item].count().reset_index()
+    cations = _devmodel.data.groupby(['smiles-cation', 'smiles-anion', 'smiles-solvent', 'mol fraction salt']
+                                    )['name-cation'].first().reset_index()
+    anions = _devmodel.data.groupby(['smiles-cation', 'smiles-anion', 'smiles-solvent', 'mol fraction salt']
+                                   )['name-anion'].first().reset_index()
+    solvents = _devmodel.data.groupby(['smiles-cation', 'smiles-anion', 'smiles-solvent', 'mol fraction salt']
+                                   )['name-solvent'].first().reset_index()
+
+    size.columns.values[-1] = "count"
+    salts = (_devmodel.data["smiles-cation"] + "." + _devmodel.
+             data["smiles-anion"]).unique()
+    print("Identified {} unique salts in {} datapoints".
+          format(len(salts), _devmodel.data.shape[0]))
+    systems = (_devmodel.data["smiles-cation"] + "." + _devmodel.
+             data["smiles-anion"] + "." + _devmodel.
+             data["smiles-solvent"]).unique()
+    print("Identified {} unique systems in {} datapoints".
+          format(len(systems), _devmodel.data.shape[0]))
+    print("Identified {} unique mixtures in {} datapoints".
+          format(len(size), _devmodel.data.shape[0]))
+    out = pd.merge(output_val, output_xtd,
+                   on=['smiles-cation', 'smiles-anion', 'smiles-solvent', 'mol fraction salt'],
+                   suffixes=['_mean', '_std'])
+    out = pd.merge(out, size)
+    out = pd.merge(out, cations)
+    out = pd.merge(out, anions)
+    if keep_descriptors:
+        from rdkit import Chem
+        from rdkit.ML.Descriptors.MoleculeDescriptors import\
+            MolecularDescriptorCalculator as calculator
+
+        solvent_di = {'water': 'O',
+                      'urea': 'NC(N)=O',
+                      'ethanol': 'OCC',
+                      'methanol': 'OC',
+                      'glycerol': 'C(C(CO)O)O',
+                      '1,2-ethanediol': 'C(CO)O',
+                      'propan-1-ol': 'CCCO',
+                      'octan-1-ol': 'CCCCCCCCO',
+                      'acetonitrile': 'CC#N',
+                      'nitromethane': 'C[N+](=O)[O-]',
+                      'N-methylaniline': 'CNC1=CC=CC=C1',
+                      '2-methylaniline': 'CC1=CC=CC=C1N',
+                      'aniline': 'C1=CC=C(C=C1)N',
+                      'cyclopentanone': 'C1CCC(=O)C1',
+                      'cyclohexanone': 'C1CCC(=O)CC1',
+                      'pyridine': 'C1=CC=NC=C1',
+                      '2-pyrrolidinone': 'C1CC(=O)NC1',
+                      'N-methylpyrrolidone': 'CN1CCCC1=O',
+                      'bromobenzene': 'C1=CC=C(C=C1)Br',
+                      'butan-1-ol': 'CCCCO',
+                      'propan-2-ol': 'CC(C)O'
+                     }
+
+        old = pd.DataFrame()
+        deslist = salty.load_data("cationDescriptors.csv").columns[2:]
+        for index, item in enumerate(solvent_di):
+            mol = Chem.MolFromSmiles(solvent_di[item])
+            feature_vector = [item, solvent_di[item]]
+            for desc in deslist:
+                feature_vector.append(calculator([desc]).CalcDescriptors(mol)[0])
+            new = pd.DataFrame(feature_vector).T
+            new.columns = [str(i) + '-solvent' for i in salty.load_data("cationDescriptors.csv").columns]
+            new = pd.concat([new, old], axis=0, sort=False)
+            old = new
+        solventDescriptors = old
+
+        cationDescriptors = salty.load_data("cationDescriptors.csv")
+        cationDescriptors.columns = [str(col) + '-cation' for col in cationDescriptors.columns]
+        anionDescriptors = salty.load_data("anionDescriptors.csv")
+        anionDescriptors.columns = [str(col) + '-anion' for col in anionDescriptors.columns]
+        new_df = pd.merge(cationDescriptors, out,
+                          on=["name-cation", "smiles-cation"], how="right")
+        new_df = pd.merge(anionDescriptors, new_df,
+                          on=["name-anion", "smiles-anion"], how="right")
+        new_df = pd.merge(solventDescriptors, new_df,
+                          on=["smiles-solvent"], how="right")
+
+        out = new_df
+    return out
